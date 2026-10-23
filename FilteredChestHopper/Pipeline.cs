@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.Xna.Framework;
 using StardewValley;
+using StardewValley.Internal;
 using StardewValley.Inventories;
 using StardewValley.ItemTypeDefinitions;
 using StardewValley.Objects;
@@ -348,11 +350,35 @@ namespace FilteredChestHopper
             return 0;
         }
 
-
         private Item CreateTransferItem(Item item, int amount)
         {
+            // Preserve existing support for the newer flavored item types.
+            Item newFlavoredItem = TryCreateNewFlavoredItem(item, amount);
+
+            if (newFlavoredItem != null)
+                return newFlavoredItem;
+
+            // Keep the existing exact-ID behavior for all other items.
+            try
+            {
+                Item exactItem = ItemRegistry.Create(
+                    item.QualifiedItemId,
+                    amount,
+                    item.Quality);
+
+                if (exactItem != null
+                    && exactItem.QualifiedItemId == item.QualifiedItemId)
+                {
+                    exactItem.Stack = amount;
+                    return exactItem;
+                }
+            }
+            catch
+            {
+                // Fall back to flavored-item reconstruction below.
+            }
+
             string flavorId = GetItemsFlavourID(item);
-            Item result;
 
             if (!string.IsNullOrEmpty(flavorId)
                 && item is StardewValley.Object objectItem)
@@ -365,26 +391,77 @@ namespace FilteredChestHopper
                 var itemType = ItemRegistry.ItemTypes.Find(
                     candidate => candidate.Identifier == item.TypeDefinitionId);
 
-                if (itemType == null)
-                    return null;
+                if (itemType != null)
+                {
+                    var variant = GetFlavoredObjectVariant(
+                        definition,
+                        objectItem,
+                        processedItem,
+                        itemType);
 
-                var variant = GetFlavoredObjectVariant(
-                    definition, objectItem, processedItem, itemType);
-
-                if (variant == null)
-                    return null;
-
-                result = variant.CreateItem();
-                result.Quality = item.Quality;
+                    if (variant != null)
+                    {
+                        Item result = variant.CreateItem();
+                        result.Quality = item.Quality;
+                        result.Stack = amount;
+                        return result;
+                    }
+                }
             }
-            else
+
+            Item fallback = ItemRegistry.Create(
+                item.QualifiedItemId,
+                amount,
+                item.Quality);
+
+            fallback.Stack = amount;
+            return fallback;
+        }
+
+        private Item TryCreateNewFlavoredItem(Item item, int amount)
+        {
+            if (item is not StardewValley.Object objectItem)
+                return null;
+
+            StardewValley.Object.PreserveType? preserveType = objectItem.preserve.Value;
+
+            if (preserveType == null)
+                return null;
+
+            if (preserveType != StardewValley.Object.PreserveType.SmokedFish
+                && preserveType != StardewValley.Object.PreserveType.DriedMushroom)
             {
-                result = ItemRegistry.Create(
-                    item.QualifiedItemId, amount, item.Quality);
+                return null;
             }
 
-            result.Stack = amount;
-            return result;
+            string flavorId = objectItem.preservedParentSheetIndex.Value.ToString();
+
+            if (string.IsNullOrEmpty(flavorId) || flavorId == "0")
+                return null;
+
+            try
+            {
+                var definition = (ObjectDataDefinition)
+                    ItemRegistry.GetTypeDefinition(ItemRegistry.type_object);
+
+                var ingredient = ItemRegistry.Create<StardewValley.Object>(
+                    flavorId.StartsWith("(O)", StringComparison.Ordinal)
+                        ? flavorId
+                        : $"(O){flavorId}");
+
+                Item result = definition.CreateFlavoredItem(preserveType.Value, ingredient);
+
+                if (result == null)
+                    return null;
+
+                result.Quality = item.Quality;
+                result.Stack = amount;
+                return result;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
     }
