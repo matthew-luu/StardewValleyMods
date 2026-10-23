@@ -1,12 +1,10 @@
+using System;
 using System.Collections.Generic;
 using Microsoft.Xna.Framework;
 using StardewValley;
-using StardewValley.Objects;
-using System.Linq;
-using System;
+using StardewValley.Inventories;
 using StardewValley.ItemTypeDefinitions;
-using StardewValley.GameData.FishPonds;
-using Microsoft.Xna.Framework.Content;
+using StardewValley.Objects;
 
 namespace FilteredChestHopper
 {
@@ -53,140 +51,184 @@ namespace FilteredChestHopper
         }
 
         //Attempt to output with this hopper as a filter
+
         public void AttemptTransfer(Mod mod)
         {
-            List<Chest> inputChests = new List<Chest>();
-            List<Chest[]> outputChests = new List<Chest[]>();
-            for (int i = 0; i < Hoppers.Count; i++)
-            {
-                Chest inputChest = Mod.GetChestAt(Location, Hoppers[i].TileLocation - new Vector2(0,1));
-                if (inputChest != null)
-                {
-                    inputChests.Add(inputChest);
-                }
+            // Each hopper takes input from above and sends output below.
+            var inputObjects = new List<StardewValley.Object>();
+            var outputObjects = new List<StardewValley.Object[]>();
 
-                Chest outputChest = Mod.GetChestAt(Location, Hoppers[i].TileLocation + new Vector2(0, 1));
-                if (outputChest != null)
+            foreach (Chest hopper in Hoppers)
+            {
+                var inputPosition =
+                    hopper.TileLocation - new Vector2(0, 1);
+                var input = GetObjectAt(inputPosition);
+
+                if (input != null)
+                    inputObjects.Add(input);
+
+                var outputPosition =
+                    hopper.TileLocation + new Vector2(0, 1);
+                var output = GetObjectAt(outputPosition);
+
+                if (output != null)
                 {
-                    outputChests.Add(new Chest[] { Hoppers[i], outputChest});
+                    outputObjects.Add(new StardewValley.Object[]
+                    {
+                hopper, output
+                    });
                 }
             }
 
-            foreach (var inputChest in inputChests)
+            foreach (var inputObject in inputObjects)
             {
-                inputChest.clearNulls();
-                var chestAboveItems = inputChest.GetItemsForPlayer(inputChest.owner.Value);
-                foreach (var outputChest in outputChests)
+                IList<Item> sourceItems;
+                Chest sourceChest = inputObject as Chest;
+
+                Inventory sourceNetworkInventory =
+                    GetNetworkInventory(mod, inputObject);
+
+                if (sourceChest != null)
                 {
-                    var filterItems = outputChest[0].GetItemsForPlayer(inputChest.owner.Value);
-                    for (int i = chestAboveItems.Count - 1; i >= 0; i--)
+                    sourceChest.clearNulls();
+                    sourceItems = sourceChest.GetItemsForPlayer(
+                        sourceChest.owner.Value);
+                }
+                else if (sourceNetworkInventory != null)
+                {
+                    sourceItems = sourceNetworkInventory;
+
+                }
+                else
+                {
+                    continue;
+                }
+
+                foreach (var outputPair in outputObjects)
+                {
+                    Chest filterHopper = (Chest)outputPair[0];
+                    StardewValley.Object destination = outputPair[1];
+
+                    var filterItems = filterHopper.GetItemsForPlayer(
+                        Game1.player.UniqueMultiplayerID);
+
+                    filterItems.RemoveEmptySlots();
+
+                    for (int i = sourceItems.Count - 1; i >= 0; i--)
                     {
-                        bool match = true;
+                        Item item = sourceItems[i];
+
+                        if (item == null)
+                            continue;
+
+                        bool match = filterItems.Count == 0;
                         int filterCount = 0;
-                        filterItems.RemoveEmptySlots();
+
                         for (int j = filterItems.Count - 1; j >= 0; j--)
                         {
-                            if(filterItems[j] != null && chestAboveItems[i] != null && filterItems[j].QualifiedItemId == chestAboveItems[i].QualifiedItemId && GetItemsFlavourID(filterItems[j]) == GetItemsFlavourID(chestAboveItems[i]) && (!mod.Config.CompareQuality || filterItems[j].Quality == chestAboveItems[i].Quality))
+                            Item filter = filterItems[j];
+
+                            if (filter != null
+                                && filter.QualifiedItemId == item.QualifiedItemId
+                                && GetItemsFlavourID(filter) == GetItemsFlavourID(item)
+                                && (!mod.Config.CompareQuality
+                                    || filter.Quality == item.Quality))
                             {
-                                //Should be able to hanlde all item types now
-                                if(mod.Config.CompareQuantity)// && chestAboveItems[i].TypeDefinitionId == ItemRegistry.type_object)
-                                {
-                                    filterCount = filterItems[j].Stack == 1 ? 0 : filterItems[j].Stack;
-                                }
                                 match = true;
+
+                                if (mod.Config.CompareQuantity)
+                                {
+                                    filterCount = filter.Stack == 1
+                                        ? 0
+                                        : filter.Stack;
+                                }
+
                                 break;
                             }
-                            else
-                            {
-                                match = false;
-                            }
                         }
-                        if (match)
+
+                        if (!match)
+                            continue;
+
+                        int amountToMove = item.Stack;
+
+                        if (filterCount > 0)
                         {
-                            Item item = chestAboveItems[i];
+                            int currentAmount = 0;
 
-                            if(filterCount > 0)
+                            Inventory destinationInventory =
+                                GetNetworkInventory(mod, destination);
+
+                            if (destinationInventory != null)
                             {
-                                int amountToMove = filterCount;
-
-                                //Calculate the amount to move to match the filter amount
-                                foreach (var itemStack in outputChest[1].GetItemsForPlayer(inputChest.owner.Value))
+                                foreach (Item existing in destinationInventory)
                                 {
-                                    if (itemStack != null && itemStack.canStackWith(item))
-                                    {
-                                        //handle single items
-                                        if (itemStack.Stack == 0)
-                                        {
-                                            amountToMove--;
-                                        }
-                                        amountToMove -= itemStack.Stack;
-                                    }
+                                    if (existing != null && existing.canStackWith(item))
+                                        currentAmount += existing.Stack;
                                 }
-
-                                //continue if the amount to move is already met
-                                if (amountToMove < 1)
-                                    continue;
-
-                                StardewValley.Object processedItem = null;
-                                string processedItemID = GetItemsFlavourID(item);
-                                if(!string.IsNullOrEmpty(processedItemID))
+                            }
+                            else if (destination is Chest destinationChest)
+                            {
+                                foreach (Item existing in
+                                    destinationChest.GetItemsForPlayer(
+                                        Game1.player.UniqueMultiplayerID))
                                 {
-                                    processedItem = new StardewValley.Object(processedItemID,1);
-                                }
-
-                                //Make a new item stack
-                                Item newItem = null;
-                                //Handle varient items like wine
-                                if(processedItem != null)
-                                {
-                                    ObjectDataDefinition objectDataDefinition = (ObjectDataDefinition)ItemRegistry.GetTypeDefinition(ItemRegistry.type_object);
-                                    newItem = GetFlavoredObjectVariant(objectDataDefinition, item as StardewValley.Object, processedItem, ItemRegistry.ItemTypes.Find((potentailItem) => potentailItem.Identifier == item.TypeDefinitionId)).CreateItem();
-                                    newItem.Stack = item.Stack;
-                                    newItem.Quality = item.Quality;
-                                }
-                                else    
-                                {
-                                    newItem = ItemRegistry.Create(item.QualifiedItemId, item.Stack, item.Quality);
-                                }
-
-                                //Limit the new stack size to the amount to Move
-                                if (newItem.Stack > amountToMove)
-                                {
-                                    newItem.Stack = amountToMove;
-                                }
-
-                                //Attempt the addition
-                                if (outputChest[1].addItem(newItem) == null)
-                                {
-                                    //clean up the old stack
-                                    if (item.Stack == newItem.Stack)
-                                    {
-                                        chestAboveItems.RemoveAt(i);
-                                    }
-                                    //handle single items
-                                    else if(newItem.Stack == 0)
-                                    {
-                                        item.Stack--;
-                                    }
-                                    //or just remove larger stacks
-                                    else
-                                    {
-                                        item.Stack -= newItem.Stack;
-                                    }
+                                    if (existing != null && existing.canStackWith(item))
+                                        currentAmount += existing.Stack;
                                 }
                             }
                             else
                             {
-                                //The Easy Way
-                                if (outputChest[1].addItem(item) == null)
-                                {
-                                    chestAboveItems.RemoveAt(i);
-                                }
+                                continue;
                             }
+
+                            amountToMove = Math.Min(
+                                item.Stack,
+                                filterCount - currentAmount);
+
+                            if (amountToMove <= 0)
+                                continue;
+                        }
+
+                        Item transferItem = CreateTransferItem(item, amountToMove);
+
+                        if (transferItem == null)
+                        {
+                            continue;
+                        }
+
+                        int moved = DepositItem(
+                            mod, destination, transferItem, amountToMove);
+
+                        if (moved <= 0)
+                            continue;
+
+                        if (moved >= item.Stack)
+                        {
+                            sourceItems.RemoveAt(i);
+                        }
+                        else
+                        {
+                            item.Stack -= moved;
                         }
                     }
                 }
             }
+        }
+
+        private Inventory GetNetworkInventory(
+            Mod mod,
+            StardewValley.Object obj)
+        {
+            if (mod.NetworkChestApi == null)
+            {
+                return null;
+            }
+
+            bool found = mod.NetworkChestApi.TryGetInventory(
+                obj, out var inventory);
+
+            return found ? inventory : null;
         }
 
         public class ChestLeftToRight : Comparer<Chest>
@@ -258,5 +300,92 @@ namespace FilteredChestHopper
                 return null; // if some item data is invalid, just don't include it
             }
         }
+
+        private StardewValley.Object GetObjectAt(Vector2 position)
+        {
+            return Location.objects.TryGetValue(position, out var obj)
+                ? obj
+                : null;
+        }
+
+        private int DepositItem(
+            Mod mod,
+            StardewValley.Object destination,
+            Item sourceItem,
+            int requestedAmount)
+        {
+            if (requestedAmount <= 0)
+                return 0;
+
+            Item transfer = sourceItem.getOne();
+            transfer.Stack = requestedAmount;
+
+            if (mod.NetworkChestApi != null &&
+                mod.NetworkChestApi.TryGetInventory(destination, out _))
+            {
+                int originalAmount = transfer.Stack;
+
+                Item remaining = mod.NetworkChestApi.AddItem(
+                    destination,
+                    transfer
+                );
+
+                return remaining == null
+                    ? originalAmount
+                    : originalAmount - remaining.Stack;
+            }
+
+            if (destination is Chest chest)
+            {
+                int originalAmount = transfer.Stack;
+                Item remaining = chest.addItem(transfer);
+
+                return remaining == null
+                    ? originalAmount
+                    : originalAmount - remaining.Stack;
+            }
+
+            return 0;
+        }
+
+
+        private Item CreateTransferItem(Item item, int amount)
+        {
+            string flavorId = GetItemsFlavourID(item);
+            Item result;
+
+            if (!string.IsNullOrEmpty(flavorId)
+                && item is StardewValley.Object objectItem)
+            {
+                var processedItem = new StardewValley.Object(flavorId, 1);
+
+                var definition = (ObjectDataDefinition)
+                    ItemRegistry.GetTypeDefinition(ItemRegistry.type_object);
+
+                var itemType = ItemRegistry.ItemTypes.Find(
+                    candidate => candidate.Identifier == item.TypeDefinitionId);
+
+                if (itemType == null)
+                    return null;
+
+                var variant = GetFlavoredObjectVariant(
+                    definition, objectItem, processedItem, itemType);
+
+                if (variant == null)
+                    return null;
+
+                result = variant.CreateItem();
+                result.Quality = item.Quality;
+            }
+            else
+            {
+                result = ItemRegistry.Create(
+                    item.QualifiedItemId, amount, item.Quality);
+            }
+
+            result.Stack = amount;
+            return result;
+        }
+
     }
 }

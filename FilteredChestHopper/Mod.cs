@@ -25,6 +25,8 @@ namespace FilteredChestHopper
         //Applying this flag gets automate to ignore the hopper, so I hijack it
         public const string ModDataFlag = "spacechase0.SuperHopper";
 
+        internal NetworkChest.INetworkChestApi NetworkChestApi;
+
         public override void Entry(IModHelper helper)
         {
             helper.Events.GameLoop.UpdateTicked += this.UpdateTicked;
@@ -80,6 +82,25 @@ namespace FilteredChestHopper
                 min: 1,
                 max: 600
             );
+
+            this.NetworkChestApi = this.Helper.ModRegistry.GetApi<NetworkChest.INetworkChestApi>(
+                    "Sorcerer.NetworkChest"
+                );
+
+            if (this.NetworkChestApi is null)
+            {
+                this.Monitor.Log(
+                    "NetworkChest API unavailable; NetworkChest integration disabled.",
+                    StardewModdingAPI.LogLevel.Warn
+                );
+            }
+            else
+            {
+                this.Monitor.Log(
+                    "NetworkChest API loaded successfully.",
+                    StardewModdingAPI.LogLevel.Info
+                );
+            }
         }
 
         private void SaveLoaded(object sender, SaveLoadedEventArgs e)
@@ -102,7 +123,7 @@ namespace FilteredChestHopper
                 return true;
             });
         }
-            
+
 
         private void ObjectListChanged(object sender, ObjectListChangedEventArgs e)
         {
@@ -161,7 +182,7 @@ namespace FilteredChestHopper
             this.AutomateCountdown = Config.TransferInterval;
 
             if (Pipelines != null)
-            { 
+            {
                 foreach (var pipeline in Pipelines)
                 {
                     pipeline.AttemptTransfer(this);
