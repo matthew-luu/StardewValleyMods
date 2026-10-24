@@ -350,15 +350,56 @@ namespace FilteredChestHopper
             return 0;
         }
 
+
         private Item CreateTransferItem(Item item, int amount)
         {
-            // Preserve existing support for the newer flavored item types.
+            // 1. Handle newer flavored items first:
+            // smoked fish and dried mushrooms.
             Item newFlavoredItem = TryCreateNewFlavoredItem(item, amount);
 
             if (newFlavoredItem != null)
                 return newFlavoredItem;
 
-            // Keep the existing exact-ID behavior for all other items.
+            // 2. Handle legacy flavored items before generic item creation.
+            string flavorId = GetItemsFlavourID(item);
+
+            if (!string.IsNullOrEmpty(flavorId)
+                && item is StardewValley.Object objectItem)
+            {
+                try
+                {
+                    var processedItem = new StardewValley.Object(flavorId, 1);
+
+                    var definition = (ObjectDataDefinition)
+                        ItemRegistry.GetTypeDefinition(ItemRegistry.type_object);
+
+                    var itemType = ItemRegistry.ItemTypes.Find(
+                        candidate => candidate.Identifier == item.TypeDefinitionId);
+
+                    if (itemType != null)
+                    {
+                        var variant = GetFlavoredObjectVariant(
+                            definition,
+                            objectItem,
+                            processedItem,
+                            itemType);
+
+                        if (variant != null)
+                        {
+                            Item result = variant.CreateItem();
+                            result.Quality = item.Quality;
+                            result.Stack = amount;
+                            return result;
+                        }
+                    }
+                }
+                catch
+                {
+                    // Continue to exact-ID reconstruction if flavored reconstruction fails.
+                }
+            }
+
+            // 3. Generic path for items that don't need flavored reconstruction.
             try
             {
                 Item exactItem = ItemRegistry.Create(
@@ -375,40 +416,10 @@ namespace FilteredChestHopper
             }
             catch
             {
-                // Fall back to flavored-item reconstruction below.
+                // Use the final fallback below.
             }
 
-            string flavorId = GetItemsFlavourID(item);
-
-            if (!string.IsNullOrEmpty(flavorId)
-                && item is StardewValley.Object objectItem)
-            {
-                var processedItem = new StardewValley.Object(flavorId, 1);
-
-                var definition = (ObjectDataDefinition)
-                    ItemRegistry.GetTypeDefinition(ItemRegistry.type_object);
-
-                var itemType = ItemRegistry.ItemTypes.Find(
-                    candidate => candidate.Identifier == item.TypeDefinitionId);
-
-                if (itemType != null)
-                {
-                    var variant = GetFlavoredObjectVariant(
-                        definition,
-                        objectItem,
-                        processedItem,
-                        itemType);
-
-                    if (variant != null)
-                    {
-                        Item result = variant.CreateItem();
-                        result.Quality = item.Quality;
-                        result.Stack = amount;
-                        return result;
-                    }
-                }
-            }
-
+            // 4. Last resort.
             Item fallback = ItemRegistry.Create(
                 item.QualifiedItemId,
                 amount,
@@ -417,6 +428,7 @@ namespace FilteredChestHopper
             fallback.Stack = amount;
             return fallback;
         }
+
 
         private Item TryCreateNewFlavoredItem(Item item, int amount)
         {
